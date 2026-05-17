@@ -479,6 +479,9 @@ async def set_webhook_with_retry(webhook_url: str) -> bool:
                     e,
                 )
                 await asyncio.sleep(delay)
+        except Exception as e:
+            logger.error("Unexpected webhook setup error: %s", e)
+            return False
 
     logger.error(
         "Failed to set webhook after %s attempts: %s",
@@ -506,7 +509,11 @@ async def retry_webhook_until_ready(webhook_url: str) -> None:
 async def on_startup(bot_instance: Bot) -> None:
     global webhook_retry_task
 
-    webhook_url = build_webhook_url()
+    try:
+        webhook_url = build_webhook_url()
+    except RuntimeError as e:
+        logger.error("Webhook URL is not configured: %s", e)
+        return
 
     if not WEBHOOK_SECRET_TOKEN:
         logger.warning(
@@ -514,16 +521,9 @@ async def on_startup(bot_instance: Bot) -> None:
             "Webhook will still work, but secret verification is disabled."
         )
 
-    is_ready = await set_webhook_with_retry(webhook_url)
-    if not is_ready:
-        logger.error(
-            "Telegram webhook setup failed at startup. "
-            "Service will stay online and keep retrying in background."
-        )
-        webhook_retry_task = asyncio.create_task(retry_webhook_until_ready(webhook_url))
-        return
-
-    logger.info("Webhook mode started")
+    # Do not block startup: Render expects the service to start listening quickly.
+    webhook_retry_task = asyncio.create_task(retry_webhook_until_ready(webhook_url))
+    logger.info("Webhook background initialization started")
     logger.info("Webhook URL: %s", webhook_url)
 
 
