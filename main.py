@@ -436,13 +436,21 @@ async def handle_text(msg: types.Message):
 # 4. WEBHOOK RUNNER (RENDER)
 # ==============================================================================
 
+webhook_retry_task: asyncio.Task | None = None
+
 
 def build_webhook_url() -> str:
-    if not WEBHOOK_BASE_URL:
+    base_url = WEBHOOK_BASE_URL
+    if not base_url:
+        external_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+        if external_hostname:
+            base_url = f"https://{external_hostname}"
+
+    if not base_url:
         raise RuntimeError(
-            "WEBHOOK_BASE_URL or RENDER_EXTERNAL_URL is required for webhook mode"
+            "WEBHOOK_BASE_URL, RENDER_EXTERNAL_URL or RENDER_EXTERNAL_HOSTNAME is required for webhook mode"
         )
-    return f"{WEBHOOK_BASE_URL.rstrip('/')}{WEBHOOK_PATH}"
+    return f"{base_url.rstrip('/')}{WEBHOOK_PATH}"
 
 
 async def set_webhook_with_retry(webhook_url: str) -> bool:
@@ -480,7 +488,24 @@ async def set_webhook_with_retry(webhook_url: str) -> bool:
     return False
 
 
+async def retry_webhook_until_ready(webhook_url: str) -> None:
+    """Keep trying to set webhook in background without killing the service."""
+    while True:
+        is_ready = await set_webhook_with_retry(webhook_url)
+        if is_ready:
+            logger.info("Webhook configured successfully in background")
+            return
+
+        logger.warning(
+            "Webhook setup still failed, next background retry in %s seconds",
+            TELEGRAM_STARTUP_RETRY_MAX_DELAY_SECONDS,
+        )
+        await asyncio.sleep(TELEGRAM_STARTUP_RETRY_MAX_DELAY_SECONDS)
+
+
 async def on_startup(bot_instance: Bot) -> None:
+    global webhook_retry_task
+
     webhook_url = build_webhook_url()
 
     if not WEBHOOK_SECRET_TOKEN:
@@ -491,13 +516,27 @@ async def on_startup(bot_instance: Bot) -> None:
 
     is_ready = await set_webhook_with_retry(webhook_url)
     if not is_ready:
-        raise RuntimeError("Telegram webhook setup failed")
+        logger.error(
+            "Telegram webhook setup failed at startup. "
+            "Service will stay online and keep retrying in background."
+        )
+        webhook_retry_task = asyncio.create_task(retry_webhook_until_ready(webhook_url))
+        return
 
     logger.info("Webhook mode started")
     logger.info("Webhook URL: %s", webhook_url)
 
 
 async def on_shutdown(bot_instance: Bot) -> None:
+    global webhook_retry_task
+
+    if webhook_retry_task and not webhook_retry_task.done():
+        webhook_retry_task.cancel()
+        try:
+            await webhook_retry_task
+        except asyncio.CancelledError:
+            pass
+
     try:
         await bot_instance.delete_webhook(drop_pending_updates=False)
     except TelegramNetworkError as e:
