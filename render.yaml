@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: calorie-counter-ai-webhook
+    env: python
+    plan: free
+    rootDir: render-telegram-bot
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: MODEL_NAME
+        value: gemini-2.5-flash
+      - key: GROQ_WHISPER_MODEL
+        value: whisper-large-v3-turbo
+      - key: WEBHOOK_PATH
+        value: /telegram/webhook
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
