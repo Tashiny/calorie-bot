@@ -506,8 +506,21 @@ async def retry_webhook_until_ready(webhook_url: str) -> None:
         await asyncio.sleep(TELEGRAM_STARTUP_RETRY_MAX_DELAY_SECONDS)
 
 
-async def on_startup(bot_instance: Bot) -> None:
+def resolve_bot_from_context(*args, **kwargs) -> Bot:
+    candidate = kwargs.get("bot") or kwargs.get("bot_instance")
+    if isinstance(candidate, Bot):
+        return candidate
+
+    if args and isinstance(args[0], Bot):
+        return args[0]
+
+    return bot
+
+
+async def on_startup(*args, **kwargs) -> None:
     global webhook_retry_task
+
+    _ = resolve_bot_from_context(*args, **kwargs)
 
     try:
         webhook_url = build_webhook_url()
@@ -527,8 +540,10 @@ async def on_startup(bot_instance: Bot) -> None:
     logger.info("Webhook URL: %s", webhook_url)
 
 
-async def on_shutdown(bot_instance: Bot) -> None:
+async def on_shutdown(*args, **kwargs) -> None:
     global webhook_retry_task
+
+    active_bot = resolve_bot_from_context(*args, **kwargs)
 
     if webhook_retry_task and not webhook_retry_task.done():
         webhook_retry_task.cancel()
@@ -538,11 +553,11 @@ async def on_shutdown(bot_instance: Bot) -> None:
             pass
 
     try:
-        await bot_instance.delete_webhook(drop_pending_updates=False)
+        await active_bot.delete_webhook(drop_pending_updates=False)
     except TelegramNetworkError as e:
         logger.warning("Could not delete webhook during shutdown: %s", e)
     finally:
-        await bot_instance.session.close()
+        await active_bot.session.close()
 
 
 async def healthcheck_handler(request: web.Request) -> web.Response:
